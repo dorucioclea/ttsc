@@ -97,6 +97,17 @@ func recordFindingBehavioralWitnesses(
   kind behavioralWitnessKind,
 ) {
   t.Helper()
+  recordFindingBehavioralWitnessesByRule(t, findings, func(string) behavioralWitnessKind {
+    return kind
+  })
+}
+
+func recordFindingBehavioralWitnessesByRule(
+  t *testing.T,
+  findings []*Finding,
+  kindForRule func(string) behavioralWitnessKind,
+) {
+  t.Helper()
   recorded := map[string]struct{}{}
   for _, finding := range findings {
     if finding == nil || finding.Rule == "" {
@@ -106,7 +117,7 @@ func recordFindingBehavioralWitnesses(
       continue
     }
     recorded[finding.Rule] = struct{}{}
-    recordBehavioralWitness(t, finding.Rule, kind)
+    recordBehavioralWitness(t, finding.Rule, kindForRule(finding.Rule))
   }
 }
 
