@@ -39,4 +39,5 @@ func assertSingleBoundaryFinding(t *testing.T, ruleName string, findings []*Find
   if len(findings[0].Fix) != 0 {
     t.Fatalf("%s: boundaries diagnostics must not offer autofixes", ruleName)
   }
+  recordBehavioralWitness(t, ruleName, behavioralWitnessProject)
 }
