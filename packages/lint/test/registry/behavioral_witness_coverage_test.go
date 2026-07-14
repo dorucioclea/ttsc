@@ -425,6 +425,16 @@ func behavioralWitnessKindForRule(ruleName string) behavioralWitnessKind {
   return behavioralWitnessEngine
 }
 
+func behavioralWitnessKindForOptions(
+  ruleName string,
+  options RuleOptionsMap,
+) behavioralWitnessKind {
+  if _, ok := options[ruleName]; ok {
+    return behavioralWitnessOptions
+  }
+  return behavioralWitnessEngine
+}
+
 func validBehavioralWitnessSources(sources []string) bool {
   if len(sources) != 1 {
     return false

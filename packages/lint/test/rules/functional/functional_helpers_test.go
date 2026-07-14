@@ -10,41 +10,40 @@ import (
 
 func runFunctionalRule(t *testing.T, ruleName, source string) []*Finding {
   t.Helper()
-  return runFunctionalRuleWithWitnessKind(
+  return runFunctionalRuleWithResolver(
     t,
-    ruleName,
     source,
-    `{}`,
-    behavioralWitnessEngine,
+    RuleConfig{ruleName: SeverityError},
+    nil,
   )
 }
 
 func runFunctionalRuleWithOptions(t *testing.T, ruleName, source, optsJSON string) []*Finding {
   t.Helper()
-  return runFunctionalRuleWithWitnessKind(
+  options := RuleOptionsMap{ruleName: json.RawMessage(optsJSON)}
+  return runFunctionalRuleWithResolver(
     t,
-    ruleName,
     source,
-    optsJSON,
-    behavioralWitnessOptions,
+    InlineRuleResolver{
+      Rules:   RuleConfig{ruleName: SeverityError},
+      Options: options,
+    },
+    options,
   )
 }
 
-func runFunctionalRuleWithWitnessKind(
+func runFunctionalRuleWithResolver(
   t *testing.T,
-  ruleName string,
   source string,
-  optsJSON string,
-  kind behavioralWitnessKind,
+  resolver RuleResolver,
+  options RuleOptionsMap,
 ) []*Finding {
   t.Helper()
   file := parseTSFile(t, "/virtual/functional.ts", source)
-  resolver := InlineRuleResolver{
-    Rules:   RuleConfig{ruleName: SeverityError},
-    Options: RuleOptionsMap{ruleName: json.RawMessage(optsJSON)},
-  }
   findings := NewEngineWithResolver(resolver).Run([]*shimast.SourceFile{file}, nil)
-  recordFindingBehavioralWitnesses(t, findings, kind)
+  recordFindingBehavioralWitnessesByRule(t, findings, func(ruleName string) behavioralWitnessKind {
+    return behavioralWitnessKindForOptions(ruleName, options)
+  })
   return findings
 }
 

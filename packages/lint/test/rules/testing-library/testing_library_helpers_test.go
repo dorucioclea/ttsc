@@ -36,11 +36,7 @@ func runTestingLibraryResolverWithOptions(
   file := parseTSXFile(t, "/virtual/component.test.tsx", source)
   findings := NewEngineWithResolver(resolver).Run([]*shimast.SourceFile{file}, nil)
   recordFindingBehavioralWitnessesByRule(t, findings, func(ruleName string) behavioralWitnessKind {
-    kind := behavioralWitnessEngine
-    if _, ok := options[ruleName]; ok {
-      kind = behavioralWitnessOptions
-    }
-    return kind
+    return behavioralWitnessKindForOptions(ruleName, options)
   })
   return normalizeRuleFindings(file, findings)
 }
