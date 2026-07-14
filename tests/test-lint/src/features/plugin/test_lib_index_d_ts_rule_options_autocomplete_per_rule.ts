@@ -27,8 +27,8 @@ import assert from "node:assert/strict";
  *   on `no-duplicate-imports`) is rejected.
  * - Typo'd option key on another options-bearing core rule (`allowTernery` for
  *   `allowTernary` on `no-unused-expressions`) is rejected.
- * - Unsupported declaration and block-function modes for
- *   `no-inner-declarations` are rejected.
+ * - Unsupported declaration and block-function modes for `no-inner-declarations`
+ *   are rejected.
  * - `no-param-reassign` exposes its discriminated `props` and ignore options.
  * - An unsupported `prefer-const` destructuring policy is rejected.
  * - Cross-rule option leakage (`testIdPattern` on
@@ -36,6 +36,8 @@ import assert from "node:assert/strict";
  * - A typo in a switch-exhaustiveness option is rejected.
  * - `unicorn/template-indent` exposes its tag/function/selector/comment and
  *   indentation options without leaking arbitrary keys.
+ * - `unicorn/string-content` accepts string and object replacement entries, and
+ *   the object form requires `suggest`.
  * - Unicorn replacement maps and import modes retain their exact public shape.
  * - `unicorn/import-style` accepts per-module style maps and `false` module
  *   entries, and rejects a non-`false` scalar module entry.
@@ -182,6 +184,21 @@ export const test_lib_index_d_ts_rule_options_autocomplete_per_rule = () => {
             lodash: { named: true, default: false },
             util: false,
           },
+        },
+      ],
+      "unicorn/string-content": [
+        "error",
+        {
+          patterns: {
+            unicorn: "🦄",
+            "'": {
+              suggest: "’",
+              fix: false,
+              caseSensitive: false,
+              message: "Prefer `{{suggest}}` over `{{match}}`.",
+            },
+          },
+          selectors: ['VariableDeclarator[id.name="description"] > Literal'],
         },
       ],
     },
@@ -419,6 +436,19 @@ export const test_lib_index_d_ts_rule_options_autocomplete_per_rule = () => {
       ],
     },
   };
+  const stringContentPatternShape: ITtscLintConfig = {
+    rules: {
+      "unicorn/string-content": [
+        "error",
+        {
+          patterns: {
+            // @ts-expect-error — a pattern entry's object form requires `suggest`; `sugest` is a typo.
+            unicorn: { sugest: "🦄" },
+          },
+        },
+      ],
+    },
+  };
   const unicornImportModeTypo: ITtscLintConfig = {
     rules: {
       "unicorn/prevent-abbreviations": [
@@ -510,6 +540,7 @@ export const test_lib_index_d_ts_rule_options_autocomplete_per_rule = () => {
   assert.ok(lintRuleWithOptions);
   assert.ok(switchOptionTypo);
   assert.ok(templateIndentOptionTypo);
+  assert.ok(stringContentPatternShape);
   assert.ok(unicornImportModeTypo);
   assert.ok(unicornReplacementShape);
   assert.ok(importStyleOptionKeyTypo);

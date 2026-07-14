@@ -47,6 +47,7 @@ import type {
 import type {
   ITtscLintUnicornImportStyleRuleOptions,
   ITtscLintUnicornPreventAbbreviationsRuleOptions,
+  ITtscLintUnicornStringContentRuleOptions,
   ITtscLintUnicornTemplateIndentRuleOptions,
 } from "./ITtscLintUnicornRuleOptions";
 
@@ -124,4 +125,5 @@ export interface ITtscLintRuleOptionsMap {
   "typescript/switch-exhaustiveness-check": ITtscLintTypeScriptSwitchExhaustivenessCheckRuleOptions;
   "unicorn/prevent-abbreviations": ITtscLintUnicornPreventAbbreviationsRuleOptions;
   "unicorn/import-style": ITtscLintUnicornImportStyleRuleOptions;
+  "unicorn/string-content": ITtscLintUnicornStringContentRuleOptions;
 }
