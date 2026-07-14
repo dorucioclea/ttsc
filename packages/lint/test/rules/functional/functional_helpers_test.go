@@ -10,10 +10,33 @@ import (
 
 func runFunctionalRule(t *testing.T, ruleName, source string) []*Finding {
   t.Helper()
-  return runFunctionalRuleWithOptions(t, ruleName, source, `{}`)
+  return runFunctionalRuleWithWitnessKind(
+    t,
+    ruleName,
+    source,
+    `{}`,
+    behavioralWitnessEngine,
+  )
 }
 
 func runFunctionalRuleWithOptions(t *testing.T, ruleName, source, optsJSON string) []*Finding {
+  t.Helper()
+  return runFunctionalRuleWithWitnessKind(
+    t,
+    ruleName,
+    source,
+    optsJSON,
+    behavioralWitnessOptions,
+  )
+}
+
+func runFunctionalRuleWithWitnessKind(
+  t *testing.T,
+  ruleName string,
+  source string,
+  optsJSON string,
+  kind behavioralWitnessKind,
+) []*Finding {
   t.Helper()
   file := parseTSFile(t, "/virtual/functional.ts", source)
   resolver := InlineRuleResolver{
@@ -21,7 +44,7 @@ func runFunctionalRuleWithOptions(t *testing.T, ruleName, source, optsJSON strin
     Options: RuleOptionsMap{ruleName: json.RawMessage(optsJSON)},
   }
   findings := NewEngineWithResolver(resolver).Run([]*shimast.SourceFile{file}, nil)
-  recordFindingBehavioralWitnesses(t, findings, behavioralWitnessOptions)
+  recordFindingBehavioralWitnesses(t, findings, kind)
   return findings
 }
 

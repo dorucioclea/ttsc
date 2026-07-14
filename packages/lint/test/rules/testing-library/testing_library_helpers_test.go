@@ -8,14 +8,34 @@ import (
 
 func runTestingLibraryRules(t *testing.T, source string, rules RuleConfig) []ruleExpectation {
   t.Helper()
-  return runTestingLibraryResolver(t, source, rules)
+  return runTestingLibraryResolverWithKind(
+    t,
+    source,
+    rules,
+    behavioralWitnessEngine,
+  )
 }
 
 func runTestingLibraryResolver(t *testing.T, source string, resolver RuleResolver) []ruleExpectation {
   t.Helper()
+  return runTestingLibraryResolverWithKind(
+    t,
+    source,
+    resolver,
+    behavioralWitnessOptions,
+  )
+}
+
+func runTestingLibraryResolverWithKind(
+  t *testing.T,
+  source string,
+  resolver RuleResolver,
+  kind behavioralWitnessKind,
+) []ruleExpectation {
+  t.Helper()
   file := parseTSXFile(t, "/virtual/component.test.tsx", source)
   findings := NewEngineWithResolver(resolver).Run([]*shimast.SourceFile{file}, nil)
-  recordFindingBehavioralWitnesses(t, findings, behavioralWitnessOptions)
+  recordFindingBehavioralWitnesses(t, findings, kind)
   return normalizeRuleFindings(file, findings)
 }
 
