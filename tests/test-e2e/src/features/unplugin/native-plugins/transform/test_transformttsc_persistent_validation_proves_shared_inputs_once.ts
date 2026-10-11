@@ -47,9 +47,12 @@ export async function test_transformttsc_persistent_validation_proves_shared_inp
   });
   const modules = projectModules(project.root);
   let reads = 0;
+  // Each read's file and product frames, so a read names its validator.
+  const readLog: string[] = [];
   const cache = createTtscTransformCache({
     readFile: (location: string) => {
       reads += 1;
+      readLog.push(`${location}\n${callerFrames()}`);
       return fs.readFileSync(location);
     },
   });
@@ -119,14 +122,19 @@ export async function test_transformttsc_persistent_validation_proves_shared_inp
   const shifted = new Date(0);
   fs.utimesSync(touched, shifted, shifted);
   const beforeTouch = [...cache.values()][0];
+  const beforeTouchGeneration = await beforeTouch;
   reads = 0;
+  readLog.length = 0;
   assert.ok(await deliver(modules[0]!));
   assert.equal(
     [...cache.values()][0],
     beforeTouch,
     "a metadata-only change must not replace the generation",
   );
-  assert.ok(reads <= 1, "metadata-only proof must read the input at most once");
+  assert.ok(
+    reads <= 1,
+    `metadata-only proof must read the input at most once (project tracker: ${trackerState((beforeTouchGeneration as { projectMutationTracker?: unknown }).projectMutationTracker)}):\n${readLog.join("\n")}`,
+  );
   reads = 0;
   assert.ok(await deliver(modules[1]!));
   // Every input of this generation is proven by now, the generation's own
@@ -194,4 +202,40 @@ export async function test_transformttsc_persistent_validation_proves_shared_inp
     generationAfterMembership,
     "an edited reachable project source must replace the generation",
   );
+}
+
+/** The product frames that reached a recorded filesystem operation. */
+function callerFrames(): string {
+  return (new Error().stack ?? "")
+    .split("\n")
+    .filter((line) => /[\\/]packages[\\/]unplugin[\\/]/.test(line))
+    .slice(0, 6)
+    .map((line) => "    " + line.trim())
+    .join("\n");
+}
+
+/**
+ * Why a mutation tracker may not prove its inputs: its failure flags, the
+ * watches that could not prove delivery and the changes it recorded.
+ */
+function trackerState(tracker: unknown): string {
+  if (tracker === undefined) return "absent";
+  const state = tracker as {
+    failed?: boolean;
+    unverified?: boolean;
+    changesOmitted?: boolean;
+    contentAuthoritative?: boolean;
+    covered?: ReadonlySet<string>;
+    unproven?: ReadonlySet<string>;
+    changes?: ReadonlySet<string>;
+  };
+  return JSON.stringify({
+    failed: state.failed,
+    unverified: state.unverified,
+    changesOmitted: state.changesOmitted,
+    contentAuthoritative: state.contentAuthoritative,
+    covered: state.covered?.size,
+    unproven: [...(state.unproven ?? [])],
+    changes: [...(state.changes ?? [])].slice(0, 8),
+  });
 }

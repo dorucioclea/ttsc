@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { E2eProcessTrace } from "../../../../../utils/src/E2eProcessTrace";
+import { isProcessRunning } from "../../../../../utils/src/isProcessRunning";
 import { isolatedCacheEnvironment } from "./isolated-cache-environment";
 
 const child_process = { ...nodeChildProcessForTrace, ...E2eProcessTrace };
@@ -239,14 +240,12 @@ async function stopWaitingProcessTree(
     throw new AggregateError(failures, "waiting run cleanup failed");
 }
 
-/** Whether a process with `pid` is running. */
+/**
+ * Whether a process with `pid` is running; an ended but uncollected zombie is
+ * not.
+ */
 export function isRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+  return isProcessRunning(pid);
 }
 
 /**
