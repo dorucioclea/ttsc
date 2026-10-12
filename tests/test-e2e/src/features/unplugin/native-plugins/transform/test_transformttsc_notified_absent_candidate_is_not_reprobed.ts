@@ -51,8 +51,13 @@ export async function test_transformttsc_notified_absent_candidate_is_not_reprob
   const probes = { calls: 0 };
   // Each probe's candidate and product frames, so a probe names its validator.
   const probeLog: string[] = [];
+  // The trackers when the first probe happens: a fallback that proves the
+  // whole snapshot clears the unverified flag that sent it there.
+  let measured: unknown;
+  let atFirstProbe: string | undefined;
   const count = (location: string): void => {
     if (!candidates.has(path.resolve(location))) return;
+    if (measured !== undefined) atFirstProbe ??= trackerStates(measured);
     probes.calls += 1;
     probeLog.push(`${location}\n${callerFrames()}`);
   };
@@ -91,9 +96,14 @@ export async function test_transformttsc_notified_absent_candidate_is_not_reprob
     assert.ok(result, `expected transformed output for ${file}`);
   };
 
+  const treeBefore = new Set(listTree(project.root));
   await deliver(modules[0]!);
   assert.equal(fs.readFileSync(project.runLog, "utf8").length, 1);
+  const created = listTree(project.root).filter(
+    (entry) => !treeBefore.has(entry),
+  );
 
+  measured = await [...cache.values()][0];
   probes.calls = 0;
   probeLog.length = 0;
   for (const file of modules.slice(1)) {
@@ -104,7 +114,7 @@ export async function test_transformttsc_notified_absent_candidate_is_not_reprob
   assert.equal(
     probes.calls,
     0,
-    `a candidate the generation watches must cost no filesystem call per delivery (active resources: ${activeResourceSummary()}; trackers: ${trackerStates(await [...cache.values()][0])}):\n${probeLog.slice(0, 4).join("\n")}`,
+    `a candidate the generation watches must cost no filesystem call per delivery (active resources: ${activeResourceSummary()}; trackers: ${trackerStates(await [...cache.values()][0])}; generation: ${generationFacts(await [...cache.values()][0])}; trackers at the first probe: ${atFirstProbe ?? "none"}; created by the first delivery: ${created.slice(0, 12).join(", ") || "nothing"}):\n${probeLog.slice(0, 4).join("\n")}`,
   );
 }
 
@@ -160,4 +170,38 @@ function trackerStates(generation: unknown): string {
     `host ${trackerState(trackers?.hostInputMutationTracker)}`,
     `candidate ${trackerState(trackers?.candidateMutationTracker)}`,
   ].join("; ");
+}
+
+/** The generation facts that select narrow or complete validation. */
+function generationFacts(generation: unknown): string {
+  const facts = generation as
+    | {
+        result?: { type?: string; graph?: unknown };
+        projectSnapshotComplete?: boolean;
+        projectDirectories?: unknown;
+        hostInputValidation?: unknown;
+        deliveryEpoch?: unknown;
+        freshDeliveryOnly?: boolean;
+        passDeliveryOnly?: boolean;
+      }
+    | undefined;
+  return JSON.stringify({
+    result: facts?.result?.type,
+    graph: facts?.result?.graph !== undefined,
+    complete: facts?.projectSnapshotComplete,
+    directories: facts?.projectDirectories !== undefined,
+    hostValidation: facts?.hostInputValidation !== undefined,
+    epoch: facts?.deliveryEpoch,
+    freshOnly: facts?.freshDeliveryOnly,
+    passOnly: facts?.passDeliveryOnly,
+  });
+}
+
+/** Every entry below a directory, relative to it, sorted. */
+function listTree(root: string): string[] {
+  try {
+    return (fs.readdirSync(root, { recursive: true }) as string[]).sort();
+  } catch {
+    return [];
+  }
 }

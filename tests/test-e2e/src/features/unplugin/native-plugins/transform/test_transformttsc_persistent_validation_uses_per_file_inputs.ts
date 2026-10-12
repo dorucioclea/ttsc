@@ -182,6 +182,8 @@ export async function test_transformttsc_persistent_validation_uses_per_file_inp
     } else stats += 1;
     return target;
   };
+  // Called with every file the delivery in progress reads.
+  let watchedRead: ((location: string) => void) | undefined;
   const cache = createTtscTransformCache({
     lstat: (location: string) => {
       lstats += 1;
@@ -190,6 +192,7 @@ export async function test_transformttsc_persistent_validation_uses_per_file_inp
     },
     readFile: (location: string) => {
       reads += 1;
+      watchedRead?.(location);
       return fs.readFileSync(location);
     },
     stat: (location: string) =>
@@ -290,28 +293,55 @@ export async function test_transformttsc_persistent_validation_uses_per_file_inp
     "a denied absence probe cannot certify that its candidate remains missing",
   );
   originalGeneration = permissionRetryGeneration;
+  const unrelated = path.join(
+    project.root,
+    "node_modules",
+    "dep1",
+    "index.d.ts",
+  );
+  const unrelatedGeneration = await originalGeneration;
+  // The trackers and the validator at the moment the edited file is read,
+  // which only a proof that fell back past its notifications does.
+  const unrelatedReads: string[] = [];
+  watchedRead = (location) => {
+    if (absenceKey(location) === absenceKey(unrelated))
+      unrelatedReads.push(
+        `${trackerStates(unrelatedGeneration)}\n${callerFrames()}`,
+      );
+  };
   fs.writeFileSync(
-    path.join(project.root, "node_modules", "dep1", "index.d.ts"),
+    unrelated,
     "export declare const unrelated: string;\n",
     "utf8",
   );
   assert.ok(await deliver(main));
+  watchedRead = undefined;
   assert.equal(
     [...cache.values()][0],
     originalGeneration,
-    "an unreachable external edit must not replace the file's generation",
+    `an unreachable external edit must not replace the file's generation (active resources: ${activeResourceSummary()}; reads of the edited file: ${unrelatedReads.join("\n") || "none"}; trackers after: ${trackerStates(unrelatedGeneration)}; generation: ${generationFacts(unrelatedGeneration)})`,
   );
 
+  // The trackers when the asset's delivery reads the edited external, which
+  // only a proof that fell back past its notifications does.
+  const assetReads: string[] = [];
+  watchedRead = (location) => {
+    if (absenceKey(location) === absenceKey(unrelated))
+      assetReads.push(
+        `${trackerStates(unrelatedGeneration)}\n${callerFrames()}`,
+      );
+  };
   fs.writeFileSync(
     path.join(project.root, "fixtures", "unused-0", "nested", "asset.txt"),
     "changed unrelated fixture asset\n",
     "utf8",
   );
   assert.ok(await deliver(main));
+  watchedRead = undefined;
   assert.equal(
     [...cache.values()][0],
     originalGeneration,
-    "an unclassified project asset must not replace the generation",
+    `an unclassified project asset must not replace the generation (reads of the earlier edited external: ${assetReads.join("\n") || "none"})`,
   );
 
   let linkedGeneration = originalGeneration;
@@ -434,6 +464,7 @@ function trackerState(tracker: unknown): string {
     failed?: boolean;
     unverified?: boolean;
     changesOmitted?: boolean;
+    membershipChanged?: boolean;
     contentAuthoritative?: boolean;
     covered?: ReadonlySet<string>;
     unproven?: ReadonlySet<string>;
@@ -443,11 +474,28 @@ function trackerState(tracker: unknown): string {
     failed: state.failed,
     unverified: state.unverified,
     changesOmitted: state.changesOmitted,
+    membershipChanged: state.membershipChanged,
     contentAuthoritative: state.contentAuthoritative,
     covered: state.covered?.size,
     unproven: [...(state.unproven ?? [])],
     changes: [...(state.changes ?? [])].slice(0, 8),
   });
+}
+
+/** The state of each tracker a generation's notification proof consults. */
+function trackerStates(generation: unknown): string {
+  const trackers = generation as
+    | {
+        projectMutationTracker?: unknown;
+        hostInputMutationTracker?: unknown;
+        candidateMutationTracker?: unknown;
+      }
+    | undefined;
+  return [
+    `project ${trackerState(trackers?.projectMutationTracker)}`,
+    `host ${trackerState(trackers?.hostInputMutationTracker)}`,
+    `candidate ${trackerState(trackers?.candidateMutationTracker)}`,
+  ].join("; ");
 }
 
 /**
@@ -468,5 +516,30 @@ function uncoveredInputs(generation: unknown, tracker: unknown): string {
     validated: validated.size,
     uncovered: missing.length,
     first: missing.slice(0, 12),
+  });
+}
+
+/** The generation facts that select narrow or complete validation. */
+function generationFacts(generation: unknown): string {
+  const facts = generation as
+    | {
+        result?: { type?: string; graph?: unknown };
+        projectSnapshotComplete?: boolean;
+        projectDirectories?: unknown;
+        hostInputValidation?: unknown;
+        deliveryEpoch?: unknown;
+        freshDeliveryOnly?: boolean;
+        passDeliveryOnly?: boolean;
+      }
+    | undefined;
+  return JSON.stringify({
+    result: facts?.result?.type,
+    graph: facts?.result?.graph !== undefined,
+    complete: facts?.projectSnapshotComplete,
+    directories: facts?.projectDirectories !== undefined,
+    hostValidation: facts?.hostInputValidation !== undefined,
+    epoch: facts?.deliveryEpoch,
+    freshOnly: facts?.freshDeliveryOnly,
+    passOnly: facts?.passDeliveryOnly,
   });
 }
