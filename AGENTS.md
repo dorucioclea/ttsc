@@ -6,7 +6,7 @@
 
 - Do the literal request. Widen or reinterpret it only when the user hands that over, and do not edit code the change does not need.
 - The user's instruction outranks a skill. When the user asks a question, answer it directly before continuing any work.
-- Reply in the user's language. Write code, comments, commits, issues, and pull requests in English.
+- Write everything the user sees, progress notes included, in the user's language, and code, comments, commits, issues, and pull requests in English.
 - Treat a reported defect or review claim as a hypothesis until code, tests, and history confirm it.
 - Fix the cause and every case it produces. No shortcut, workaround, or special case, however hard the real fix.
 - Let a test run, CI run, or review round finish, then fix all of its findings together by cause. Fixing the first failure and rerunning is the pattern to avoid.
