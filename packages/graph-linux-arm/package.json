@@ -1,6 +1,6 @@
 {
   "name": "@ttsc/graph-linux-arm",
-  "version": "0.31.5",
+  "version": "0.32.0",
   "description": "Linux arm native ttscgraph binary for @ttsc/graph.",
   "os": [
     "linux"
