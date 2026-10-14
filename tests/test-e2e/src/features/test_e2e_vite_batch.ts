@@ -10,6 +10,8 @@ import { fallbackToolDirectory } from "../../../../packages/unplugin/lib/core/br
 import { hostToolDirectory } from "../../../../packages/unplugin/lib/core/bridge/hostToolDirectory.mjs";
 import { projectRecordFile } from "../../../../packages/unplugin/lib/core/bridge/projectRecordFile.mjs";
 import { E2eProcessTrace } from "../../../utils/src/E2eProcessTrace";
+import { TestFailureLedger } from "../../../utils/src/TestFailureLedger";
+import { TestLifetime } from "../../../utils/src/TestLifetime";
 import { createViteBuildControl } from "../../../utils/src/unplugin/createViteBuildControl";
 import { BatchWorkspace } from "../batch/BatchWorkspace";
 import { OwnedE2eEntry } from "../batch/OwnedE2eEntry";
@@ -19,6 +21,7 @@ import type {
 } from "../batch/viteBuildCorpus";
 import { viteServeCorpus } from "../batch/viteServeCorpus";
 import { test_vite_compiler_watch_tracks_subscription_and_alias_boundaries } from "./unplugin/native-plugins/adapters/test_vite_compiler_watch_tracks_subscription_and_alias_boundaries";
+import { case_vite_optimizer_discovers_transform_imports } from "./unplugin/scenes/case_vite_optimizer_discovers_transform_imports";
 import { test_watch_broker_hears_what_follows_ready } from "./unplugin/transform/test_watch_broker_hears_what_follows_ready";
 
 /**
@@ -112,6 +115,12 @@ export async function test_e2e_vite_batch(): Promise<void> {
   } catch (error) {
     combinedFailures.push(error);
   }
+  for (const host of ["vite", "vite8"] as const)
+    try {
+      await case_vite_optimizer_discovers_transform_imports(undefined, host);
+    } catch (error) {
+      combinedFailures.push(error);
+    }
   if (combinedFailures.length === 1) throw combinedFailures[0];
   if (combinedFailures.length > 1)
     throw new AggregateError(
@@ -141,194 +150,170 @@ async function runViteBuildActor(
   workspace: BatchWorkspace.Workspace,
   phase: (name: string, data?: Record<string, unknown>) => void,
 ): Promise<void> {
-  const rootStat = fs.lstatSync(workspace.root);
-  const rootIdentity = {
-    realpath: fs.realpathSync.native(workspace.root),
-    dev: rootStat.dev,
-    ino: rootStat.ino,
-    birthtimeMs: rootStat.birthtimeMs,
+  // Materialized fixtures do not make this actor a warm rebuild: it still
+  // owns cold TtscCompiler.prepare(), every publication and original close.
+  // Apply the existing cold-link budget once; the child shares this fixed cap.
+  // Only the original native retirement receipt authorizes restoration.
+  const deadlineOwner = new TestLifetime({
+    name: "shared Vite actor",
+    timeoutMs: 900_000,
+  });
+  const failureLedger = new TestFailureLedger();
+  const originalPhase = phase;
+  phase = (name, data) => {
+    deadlineOwner.checkpoint(name);
+    originalPhase(name, data);
   };
-  const originals = ["console.d.ts", "bundle.ts", "native-pipeline.ts"].map(
-    (name) => {
-      const file = path.join(workspace.root, "src", name);
-      const stat = fs.lstatSync(file);
-      assert.equal(stat.isFile() && !stat.isSymbolicLink(), true);
-      return {
-        file,
-        bytes: fs.readFileSync(file),
-        dev: stat.dev,
-        ino: stat.ino,
-        birthtimeMs: stat.birthtimeMs,
-      };
-    },
-  );
-  const primary = projectRecordFile(
-    hostToolDirectory(process.cwd()),
-    path.join(workspace.root, "tsconfig.json"),
-  );
-  const heldPrimary = `${primary}.vite-held`;
-  assert.equal(fs.existsSync(heldPrimary), false);
-  const fallbackRoot = fallbackToolDirectory(process.cwd());
-  assert.ok(fallbackRoot);
-  const fallback = projectRecordFile(
-    fallbackRoot,
-    path.join(workspace.root, "tsconfig.json"),
-  );
-  if (fs.existsSync(fallback)) {
-    const stat = fs.lstatSync(fallback);
-    assert.equal(stat.isFile() && !stat.isSymbolicLink(), true);
-  }
-  const fallbackBytes = fs.existsSync(fallback)
-    ? fs.readFileSync(fallback)
-    : undefined;
-  const controlParent = path.join(
-    TestProject.WORKSPACE_ROOT,
-    ".wiki",
-    "unplugin-discovery-20261008",
-  );
-  const controlOwner = createViteBuildControl(controlParent);
-  const control = controlOwner.root;
-  const requestFile = path.join(control, "request.json");
-  const journal = path.join(control, "record-transition.json");
-  const resultFile = path.join(control, "result.json");
-  const request: ViteBuildRequest = {
-    workspace: {
-      root: workspace.root,
-      cache: workspace.cache,
-      contextReceipt: workspace.contextReceipt,
-      pathsReceipt: workspace.pathsReceipt,
-      expected: workspace.expected,
-    },
-    journal,
-  };
-  const lifetime: { state: "joined" | "not-started" | "unknown" } = {
-    state: "not-started",
-  };
-  const failures: unknown[] = [];
   try {
-    fs.writeFileSync(requestFile, JSON.stringify(request), { flag: "wx" });
-    phase("build-actor-started", { control });
-    lifetime.state = "unknown";
-    const result = await OwnedE2eEntry.run({
-      entry: path.join(workspace.root, "tools/vite-build-worker.mjs"),
-      args: [
-        pathToFileURL(
-          path.join(
-            TestProject.WORKSPACE_ROOT,
-            "tests/test-e2e/src/batch/viteBuildCorpus.ts",
-          ),
-        ).href,
-        requestFile,
-        resultFile,
-      ],
-      observeRetirement: (state) => {
-        lifetime.state = state;
-        phase("build-actor-retirement", { state });
+    const rootStat = fs.lstatSync(workspace.root);
+    const rootIdentity = {
+      realpath: fs.realpathSync.native(workspace.root),
+      dev: rootStat.dev,
+      ino: rootStat.ino,
+      birthtimeMs: rootStat.birthtimeMs,
+    };
+    const originals = ["console.d.ts", "bundle.ts", "native-pipeline.ts"].map(
+      (name) => {
+        const file = path.join(workspace.root, "src", name);
+        const stat = fs.lstatSync(file);
+        assert.equal(stat.isFile() && !stat.isSymbolicLink(), true);
+        return {
+          file,
+          bytes: fs.readFileSync(file),
+          dev: stat.dev,
+          ino: stat.ino,
+          birthtimeMs: stat.birthtimeMs,
+        };
       },
-    });
-    phase("build-actor-returned", {
-      pid: result.pid,
-      status: result.status,
-      signal: result.signal,
-    });
-    if (result.error) failures.push(result.error);
-    if (fs.existsSync(resultFile)) {
-      const report = JSON.parse(fs.readFileSync(resultFile, "utf8"));
-      if (report.ok !== true)
-        failures.push(new Error("shared Vite actor failed", { cause: report }));
-    } else
-      failures.push(new Error("shared Vite actor supplied no final result"));
-    if (result.status !== 0 || result.signal !== null)
-      failures.push(
-        new Error("shared Vite actor terminated without success", {
-          cause: { status: result.status, signal: result.signal },
-        }),
-      );
-  } catch (error) {
-    failures.push(error);
-  } finally {
-    let restored = false;
-    if (lifetime.state === "joined" || lifetime.state === "not-started") {
-      try {
-        const currentRoot = fs.lstatSync(workspace.root);
-        assert.deepEqual(
-          {
-            realpath: fs.realpathSync.native(workspace.root),
-            dev: currentRoot.dev,
-            ino: currentRoot.ino,
-            birthtimeMs: currentRoot.birthtimeMs,
-          },
-          rootIdentity,
+    );
+    const primary = projectRecordFile(
+      hostToolDirectory(process.cwd()),
+      path.join(workspace.root, "tsconfig.json"),
+    );
+    const heldPrimary = `${primary}.vite-held`;
+    assert.equal(fs.existsSync(heldPrimary), false);
+    const fallbackRoot = fallbackToolDirectory(process.cwd());
+    assert.ok(fallbackRoot);
+    const fallback = projectRecordFile(
+      fallbackRoot,
+      path.join(workspace.root, "tsconfig.json"),
+    );
+    if (fs.existsSync(fallback)) {
+      const stat = fs.lstatSync(fallback);
+      assert.equal(stat.isFile() && !stat.isSymbolicLink(), true);
+    }
+    const fallbackBytes = fs.existsSync(fallback)
+      ? fs.readFileSync(fallback)
+      : undefined;
+    const controlParent = path.join(
+      TestProject.WORKSPACE_ROOT,
+      ".wiki",
+      "unplugin-discovery-20261008",
+    );
+    const controlOwner = createViteBuildControl(controlParent);
+    const control = controlOwner.root;
+    const requestFile = path.join(control, "request.json");
+    const journal = path.join(control, "record-transition.json");
+    const resultFile = path.join(control, "result.json");
+    const request: ViteBuildRequest = {
+      workspace: {
+        root: workspace.root,
+        cache: workspace.cache,
+        contextReceipt: workspace.contextReceipt,
+        pathsReceipt: workspace.pathsReceipt,
+        expected: workspace.expected,
+      },
+      journal,
+      deadline: deadlineOwner.deadline,
+    };
+    const lifetime: { state: "joined" | "not-started" | "unknown" } = {
+      state: "not-started",
+    };
+    try {
+      fs.writeFileSync(requestFile, JSON.stringify(request), { flag: "wx" });
+      phase("build-actor-started", { control });
+      lifetime.state = "unknown";
+      const result = await OwnedE2eEntry.run({
+        entry: path.join(workspace.root, "tools/vite-build-worker.mjs"),
+        args: [
+          pathToFileURL(
+            path.join(
+              TestProject.WORKSPACE_ROOT,
+              "tests/test-e2e/src/batch/viteBuildCorpus.ts",
+            ),
+          ).href,
+          requestFile,
+          resultFile,
+        ],
+        observeRetirement: (state) => {
+          lifetime.state = state;
+          phase("build-actor-retirement", { state });
+        },
+        signal: deadlineOwner.signal,
+      });
+      phase("build-actor-returned", {
+        pid: result.pid,
+        status: result.status,
+        signal: result.signal,
+      });
+      if (Object.prototype.hasOwnProperty.call(result, "error"))
+        failureLedger.add(result.error);
+      if (fs.existsSync(resultFile)) {
+        const report = JSON.parse(fs.readFileSync(resultFile, "utf8"));
+        if (report.ok !== true)
+          failureLedger.add(
+            new Error("shared Vite actor failed", { cause: report }),
+          );
+      } else
+        failureLedger.add(
+          new Error("shared Vite actor supplied no final result"),
         );
-        const restores = await TestExecutor.collectPhases([
-          {
-            name: "restore original primary record",
-            run: () => {
-              if (lifetime.state === "not-started") {
-                assert.equal(fs.existsSync(journal), false);
-                assert.equal(fs.existsSync(heldPrimary), false);
-                return;
-              }
-              const transition: ViteRecordTransition = fs.existsSync(journal)
-                ? JSON.parse(fs.readFileSync(journal, "utf8"))
-                : {};
-              if (fs.existsSync(heldPrimary)) {
-                assert.ok(
-                  transition.primary,
-                  "held primary has no original identity receipt",
-                );
-                const held = fs.lstatSync(heldPrimary);
-                assert.equal(held.isFile() && !held.isSymbolicLink(), true);
-                assert.deepEqual(
-                  {
-                    dev: held.dev,
-                    ino: held.ino,
-                    birthtimeMs: held.birthtimeMs,
-                  },
-                  {
-                    dev: transition.primary.identity.dev,
-                    ino: transition.primary.identity.ino,
-                    birthtimeMs: transition.primary.identity.birthtimeMs,
-                  },
-                );
-                assert.deepEqual(
-                  fs.readFileSync(heldPrimary),
-                  Buffer.from(transition.primary.bytes, "base64"),
-                );
-                if (fs.existsSync(primary)) {
-                  assert.ok(
-                    transition.blocker,
-                    "primary blocker identity is unknown",
-                  );
-                  const blocker = fs.lstatSync(primary);
-                  assert.equal(
-                    blocker.isDirectory() && !blocker.isSymbolicLink(),
-                    true,
-                  );
-                  assert.deepEqual(
-                    {
-                      dev: blocker.dev,
-                      ino: blocker.ino,
-                      birthtimeMs: blocker.birthtimeMs,
-                    },
-                    transition.blocker,
-                  );
-                  fs.rmdirSync(primary);
+      if (result.status !== 0 || result.signal !== null)
+        failureLedger.add(
+          new Error("shared Vite actor terminated without success", {
+            cause: { status: result.status, signal: result.signal },
+          }),
+        );
+    } catch (error) {
+      failureLedger.add(error);
+    } finally {
+      let restored = false;
+      if (lifetime.state === "joined" || lifetime.state === "not-started") {
+        try {
+          const currentRoot = fs.lstatSync(workspace.root);
+          assert.deepEqual(
+            {
+              realpath: fs.realpathSync.native(workspace.root),
+              dev: currentRoot.dev,
+              ino: currentRoot.ino,
+              birthtimeMs: currentRoot.birthtimeMs,
+            },
+            rootIdentity,
+          );
+          const restores = await TestExecutor.collectPhases([
+            {
+              name: "restore original primary record",
+              run: () => {
+                if (lifetime.state === "not-started") {
+                  assert.equal(fs.existsSync(journal), false);
+                  assert.equal(fs.existsSync(heldPrimary), false);
+                  return;
                 }
-                fs.renameSync(heldPrimary, primary);
-              } else if (fs.existsSync(primary)) {
-                const stat = fs.lstatSync(primary);
-                assert.equal(
-                  stat.isFile() && !stat.isSymbolicLink(),
-                  true,
-                  "unowned primary coordinate cannot be restored",
-                );
-                if (transition.primary && !transition.restored)
+                const transition: ViteRecordTransition = fs.existsSync(journal)
+                  ? JSON.parse(fs.readFileSync(journal, "utf8"))
+                  : {};
+                if (fs.existsSync(heldPrimary)) {
+                  assert.ok(
+                    transition.primary,
+                    "held primary has no original identity receipt",
+                  );
+                  const held = fs.lstatSync(heldPrimary);
+                  assert.equal(held.isFile() && !held.isSymbolicLink(), true);
                   assert.deepEqual(
                     {
-                      dev: stat.dev,
-                      ino: stat.ino,
-                      birthtimeMs: stat.birthtimeMs,
+                      dev: held.dev,
+                      ino: held.ino,
+                      birthtimeMs: held.birthtimeMs,
                     },
                     {
                       dev: transition.primary.identity.dev,
@@ -336,89 +321,143 @@ async function runViteBuildActor(
                       birthtimeMs: transition.primary.identity.birthtimeMs,
                     },
                   );
-              } else
-                assert.ok(
-                  !transition.primary || transition.restored,
-                  "the original primary has neither an owned held file nor a completed restoration",
-                );
+                  assert.deepEqual(
+                    fs.readFileSync(heldPrimary),
+                    Buffer.from(transition.primary.bytes, "base64"),
+                  );
+                  if (fs.existsSync(primary)) {
+                    assert.ok(
+                      transition.blocker,
+                      "primary blocker identity is unknown",
+                    );
+                    const blocker = fs.lstatSync(primary);
+                    assert.equal(
+                      blocker.isDirectory() && !blocker.isSymbolicLink(),
+                      true,
+                    );
+                    assert.deepEqual(
+                      {
+                        dev: blocker.dev,
+                        ino: blocker.ino,
+                        birthtimeMs: blocker.birthtimeMs,
+                      },
+                      transition.blocker,
+                    );
+                    fs.rmdirSync(primary);
+                  }
+                  fs.renameSync(heldPrimary, primary);
+                } else if (fs.existsSync(primary)) {
+                  const stat = fs.lstatSync(primary);
+                  assert.equal(
+                    stat.isFile() && !stat.isSymbolicLink(),
+                    true,
+                    "unowned primary coordinate cannot be restored",
+                  );
+                  if (transition.primary && !transition.restored)
+                    assert.deepEqual(
+                      {
+                        dev: stat.dev,
+                        ino: stat.ino,
+                        birthtimeMs: stat.birthtimeMs,
+                      },
+                      {
+                        dev: transition.primary.identity.dev,
+                        ino: transition.primary.identity.ino,
+                        birthtimeMs: transition.primary.identity.birthtimeMs,
+                      },
+                    );
+                } else
+                  assert.ok(
+                    !transition.primary || transition.restored,
+                    "the original primary has neither an owned held file nor a completed restoration",
+                  );
+              },
             },
-          },
-          ...originals.map((original) => ({
-            name: "restore Vite input " + original.file,
-            run: () => {
-              const stat = fs.lstatSync(original.file);
-              assert.equal(stat.isFile() && !stat.isSymbolicLink(), true);
-              assert.deepEqual(
-                { dev: stat.dev, ino: stat.ino, birthtimeMs: stat.birthtimeMs },
-                {
-                  dev: original.dev,
-                  ino: original.ino,
-                  birthtimeMs: original.birthtimeMs,
-                },
-              );
-              if (lifetime.state === "joined")
-                fs.writeFileSync(original.file, original.bytes);
-              else
-                assert.deepEqual(
-                  fs.readFileSync(original.file),
-                  original.bytes,
-                );
-            },
-          })),
-          {
-            name: "restore original fallback record",
-            run: () => {
-              if (fs.existsSync(fallback)) {
-                const stat = fs.lstatSync(fallback);
+            ...originals.map((original) => ({
+              name: "restore Vite input " + original.file,
+              run: () => {
+                const stat = fs.lstatSync(original.file);
                 assert.equal(stat.isFile() && !stat.isSymbolicLink(), true);
-              }
-              if (lifetime.state === "not-started") {
                 assert.deepEqual(
-                  fs.existsSync(fallback)
-                    ? fs.readFileSync(fallback)
-                    : undefined,
-                  fallbackBytes,
+                  {
+                    dev: stat.dev,
+                    ino: stat.ino,
+                    birthtimeMs: stat.birthtimeMs,
+                  },
+                  {
+                    dev: original.dev,
+                    ino: original.ino,
+                    birthtimeMs: original.birthtimeMs,
+                  },
                 );
-              } else if (fallbackBytes !== undefined)
-                fs.writeFileSync(fallback, fallbackBytes);
-              else if (fs.existsSync(fallback)) fs.unlinkSync(fallback);
+                if (lifetime.state === "joined")
+                  fs.writeFileSync(original.file, original.bytes);
+                else
+                  assert.deepEqual(
+                    fs.readFileSync(original.file),
+                    original.bytes,
+                  );
+              },
+            })),
+            {
+              name: "restore original fallback record",
+              run: () => {
+                if (fs.existsSync(fallback)) {
+                  const stat = fs.lstatSync(fallback);
+                  assert.equal(stat.isFile() && !stat.isSymbolicLink(), true);
+                }
+                if (lifetime.state === "not-started") {
+                  assert.deepEqual(
+                    fs.existsSync(fallback)
+                      ? fs.readFileSync(fallback)
+                      : undefined,
+                    fallbackBytes,
+                  );
+                } else if (fallbackBytes !== undefined)
+                  fs.writeFileSync(fallback, fallbackBytes);
+                else if (fs.existsSync(fallback)) fs.unlinkSync(fallback);
+              },
             },
-          },
-        ]);
-        for (const restore of restores)
-          if (restore.status === "failed") failures.push(restore.error);
-        restored = restores.every((restore) => restore.status === "returned");
-        phase("build-actor-restoration-returned", {
-          restored,
+          ]);
+          for (const restore of restores)
+            if (restore.status === "failed") failureLedger.add(restore.error);
+          restored = restores.every((restore) => restore.status === "returned");
+          phase("build-actor-restoration-returned", {
+            restored,
+            lifetime: lifetime.state,
+          });
+        } catch (error) {
+          failureLedger.add(error);
+        }
+      }
+      if (!restored) {
+        try {
+          BatchWorkspace.retain(
+            "shared Vite original retirement or mutation identity is unknown",
+          );
+        } catch (error) {
+          failureLedger.add(error);
+        }
+      }
+      try {
+        controlOwner.release(lifetime.state, restored);
+        phase("build-actor-control-release-returned", {
+          control,
           lifetime: lifetime.state,
+          restored,
         });
       } catch (error) {
-        failures.push(error);
+        failureLedger.add(error);
       }
     }
-    if (!restored) {
-      try {
-        BatchWorkspace.retain(
-          "shared Vite original retirement or mutation identity is unknown",
-        );
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    try {
-      controlOwner.release(lifetime.state, restored);
-      phase("build-actor-control-release-returned", {
-        control,
-        lifetime: lifetime.state,
-        restored,
-      });
-    } catch (error) {
-      failures.push(error);
-    }
+  } catch (error) {
+    failureLedger.add(error);
+  } finally {
+    // The native operation and all original restoration readers have finished
+    // or refused before this timer capability is released.
+    for (const failure of deadlineOwner.finish()) failureLedger.add(failure);
   }
-  if (failures.length !== 0)
-    throw new AggregateError(
-      failures,
-      "shared Vite execution, original retirement, restoration and control release",
-    );
+  failureLedger.throwIfFailed(
+    "shared Vite execution, original retirement, restoration and control release",
+  );
 }

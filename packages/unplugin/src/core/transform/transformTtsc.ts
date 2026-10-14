@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import type { ResolvedTtscUnpluginOptions } from "../options/ResolvedTtscUnpluginOptions";
+import { TtscPrecompilation } from "./TtscPrecompilation";
 import type { TtscTransformResult } from "./TtscTransformResult";
 import { createAliasPaths } from "./alias/createAliasPaths";
 import { TERMINAL_TRANSFORM_GENERATIONS } from "./cache/TERMINAL_TRANSFORM_GENERATIONS";
@@ -68,38 +69,40 @@ import { recordedDependencyWitnesses } from "./watch/recordedDependencyWitnesses
  * @param hooks - Optional adapter callbacks; see {@link TtscTransformHooks}.
  *   Dependency notifications fire on cache hits too; watch registrations are
  *   per build, not per compilation.
- * @evidence contracts/common.md#principled-implementation Project selection and generation-qualified cache admission preserve compiler disk authority; fresh-only success additionally needs an explicit nonwatching lifecycle, coherent project declaration and actual host-cache withdrawal, because incomplete observation cannot support watch invalidation.
- * @evidence contracts/common.md#clear-and-simple-design One delivery coordinator composes project selection, cache admission, compilation, output selection and host notifications; dedicated owners handle proof and lifetime internals.
- * @evidence contracts/common.md#prohibited-implementation-shortcuts Wrapper modules cannot poison source baselines; incomplete local results can share only explicitly nonwatching first deliveries in their exact pass. Unknown/watching lifecycles or unsupported withdrawal reject and evict them rather than invent persistent records or dependency closure.
- * @evidence contracts/common.md#meaningful-documentation Native paragraphs and argument tags explain project scope, no-transform outcomes, cache epochs and per-build notification responsibilities with links to maintained reference context.
- * @evidence contracts/performance.md#efficient-algorithms
- *   Selection/key construction pays ancestor/config/alias/option/path text work.
- *   Each iteration may prepare toolchain state, settle native notifications and
- *   replay source/project/external/universal proofs before selecting output.
- *   In-flight/valid completed reuse avoids compilation, not those checks or
- *   output/map/notification/record work. Capture misses pay whole native compile
- *   and input populations. The common proof owner skips redundant environment
- *   preparation for proven first deliveries and shares synchronous native proof
- *   queries; persistent/repeated delivery establishes fresh authority. Concurrent supersession can repeat the outer loop
- *   without a delivery-level retry/time bound here.
- * @evidence contracts/performance.md#reuse-equivalent-work Cache identity covers config/options/plugins/aliases; current generations, pass-qualified terminal verdicts and in-flight Promises are shared only while their source and dependency proof remains valid.
- * @evidence contracts/performance.md#bound-retention-and-release-resources
- *   Optional cache state retains current generation Promises/results and
- *   per-key dependency/case facts without a byte/key cap here. Native tasks
- *   belong to compiler/capture owners; uncached captures retain no notification
- *   or persistent clock probe. Fresh-only delivery releases capture resources,
- *   retaining only an explicitly admitted local pass result; rejected or failed
- *   incomplete handoff detaches its generation. Eviction/disposal attempt independent resource release
- *   and native failures need not close every handle or remove every probe.
- * @evidence contracts/portability.md#os-neutral-implementation Native module paths and project coordinates use supported path/filesystem abstractions, while actual case policy and watcher capability come from generation proof rather than OS-name assumptions.
+ * @evidence contracts/common.md#principled-implementation Project selection and generation-qualified admission preserve compiler disk authority; preparation shares selection, keys, capture and input proofs with delivery, while host effects and first-delivery permission remain exclusive to actual delivery. Fresh-only success still requires an explicit nonwatching lifecycle, coherent project declaration and supported host-cache withdrawal because incomplete observation cannot establish watch invalidation.
+ * @evidence contracts/common.md#clear-and-simple-design One coordinator mode shares project selection, admission, compilation and output selection between preparation and delivery; dedicated owners retain proof and lifetime internals, and delivery alone performs host notification.
+ * @evidence contracts/common.md#prohibited-implementation-shortcuts Wrapper modules cannot poison source baselines. Preparation skips handoff rather than postcompile proof, and superseded preparation stops without reviving withdrawn generations. Incomplete local results share only explicitly nonwatching first deliveries in their exact pass; unknown/watching lifecycles or unsupported withdrawal reject and evict without invented persistent records or dependency closure.
+ * @evidence contracts/common.md#meaningful-documentation Native paragraphs and argument tags explain project scope, no-transform outcomes, cache epochs and per-build notifications; coordinator prose identifies delivery-only effects and postpreparation admission, with maintained invalidation reference context.
+ * @evidence contracts/performance.md#efficient-algorithms Selection and keys pay ancestor/config/alias/option/path-text work. Each iteration may prepare toolchains, settle notifications and replay source/project/external/universal proofs; reuse avoids compilation rather than those checks or output/map/notification/record work. Misses pay native compilation and input populations. Proven first deliveries skip redundant environment preparation and share synchronous proof queries; repeated delivery establishes fresh authority. Startup schedules explicit entries concurrently and skips delivery output/map/registration work. Supersession can repeat the outer loop without a retry or time bound.
+ * @evidence contracts/performance.md#reuse-equivalent-work Config/options/plugins/aliases key the ordinary project Promise shared by preparation, simultaneous loads and sibling entries; completed generations, pass-qualified terminal verdicts and in-flight work remain reusable only under current source and dependency proof.
+ * @evidence contracts/performance.md#bound-retention-and-release-resources Optional cache state retains generation Promises/results and per-key dependency/case facts without a byte/key cap. Native tasks belong to compiler/capture owners; uncached captures retain no notification or persistent clock probe. Fresh-only delivery releases capture resources while retaining an admitted local pass result; failed or rejected incomplete handoff detaches its generation. Superseded preparation preserves the new owner, and withdrawal schedules disposal of its pending fulfilled result. Eviction/disposal attempt independent release; native failure need not close every handle or remove every probe.
+ * @evidence contracts/portability.md#os-neutral-implementation Preparation and delivery use the same native project selection, path identity and cache-owned filesystem boundaries, with exact startup entry paths. Generation proof supplies case and watcher policy rather than OS-name assumptions.
  */
-export async function transformTtsc(
+export function transformTtsc(
   id: string,
   source: string,
   options: ResolvedTtscUnpluginOptions,
   aliases?: unknown,
   cache?: TtscTransformCache,
   hooks?: TtscTransformHooks,
+): Promise<TtscTransformResult | undefined> {
+  return runTransformTtsc(id, source, options, aliases, cache, hooks, false);
+}
+
+/**
+ * Coordinate capture and actual delivery through the same project cache.
+ * Preparation stops before handoff: it cannot mark a module served, publish a
+ * host record, acknowledge volatility or emit module diagnostics. A prepared
+ * generation must still pass ordinary admission when the host requests it.
+ */
+async function runTransformTtsc(
+  id: string,
+  source: string,
+  options: ResolvedTtscUnpluginOptions,
+  aliases: unknown,
+  cache: TtscTransformCache | undefined,
+  hooks: TtscTransformHooks | undefined,
+  preparing: boolean,
 ): Promise<TtscTransformResult | undefined> {
   const filesystem = transformFilesystem(cache);
   const exact = hooks?.exactPath === true;
@@ -126,7 +129,10 @@ export async function transformTtsc(
   // Writing the delivered record must not create a new member of that proof.
   prepareProjectRecordDirectories(hooks?.project);
 
-  const selection = resolveProjectSelection(file, options.project, filesystem);
+  const selection =
+    hooks?.projectSelection === undefined
+      ? resolveProjectSelection(file, options.project, filesystem)
+      : { tsconfig: path.resolve(hooks.projectSelection), consulted: [] };
   const tsconfig = selection.tsconfig;
   const selectedProjectRoot = path.resolve(
     options.projectRoot ?? path.dirname(tsconfig),
@@ -143,6 +149,19 @@ export async function transformTtsc(
     tsconfig,
   };
   const aliasPaths = createAliasPaths(aliases);
+  if (!preparing && cache !== undefined) {
+    TtscPrecompilation.start(cache, options, aliasPaths, (entry, text) =>
+      runTransformTtsc(
+        entry,
+        text,
+        options,
+        aliases,
+        cache,
+        { ...hooks, exactPath: true, projectSelection: undefined },
+        true,
+      ),
+    );
+  }
   const key = createTransformCacheKey({
     aliasPaths,
     compilerOptions: options.compilerOptions,
@@ -169,7 +188,10 @@ export async function transformTtsc(
             undefined,
             terminal.validation.cached.projectRoot,
           );
-          if (cache?.get(key) !== transformed) continue;
+          if (cache?.get(key) !== transformed) {
+            if (preparing) return undefined;
+            continue;
+          }
         }
         // A terminal verdict is an answer about one observed environment, not an
         // invitation for every later module to repeat the whole compile.
@@ -180,7 +202,13 @@ export async function transformTtsc(
             filesystem,
           })
         ) {
-          notifyRejectedGenerationInputs(hooks, terminal, file, watchSelection);
+          if (!preparing)
+            notifyRejectedGenerationInputs(
+              hooks,
+              terminal,
+              file,
+              watchSelection,
+            );
           throw terminal;
         }
         evictGeneration(cache, key, transformed);
@@ -193,12 +221,13 @@ export async function transformTtsc(
     if (transformed !== undefined) {
       const cached = await awaitOrEvict(cache, key, transformed).catch(
         (rejection: unknown) => {
-          notifyRejectedGenerationInputs(
-            hooks,
-            rejection,
-            file,
-            watchSelection,
-          );
+          if (!preparing)
+            notifyRejectedGenerationInputs(
+              hooks,
+              rejection,
+              file,
+              watchSelection,
+            );
           throw rejection;
         },
       );
@@ -206,6 +235,7 @@ export async function transformTtsc(
       // While this caller awaited the old Promise, another caller may have
       // invalidated it and installed a newer authoritative generation.
       if (cache?.get(key) !== transformed) {
+        if (preparing) return undefined;
         continue;
       }
       // A generation captured while native notifications were trusted keeps
@@ -218,11 +248,15 @@ export async function transformTtsc(
       if (epoch === undefined) {
         await settleProjectMutationEvents(cached);
         if (cache?.get(key) !== transformed) {
+          if (preparing) return undefined;
           continue;
         }
       }
       await TtscGenerationProof.prepare(cached, file, epoch);
-      if (cache?.get(key) !== transformed) continue;
+      if (cache?.get(key) !== transformed) {
+        if (preparing) return undefined;
+        continue;
+      }
       // No await between this observation and synchronous admission.
       const proof = TtscGenerationProof.create(cached, file, epoch);
       const action = selectCachedGenerationAction({
@@ -234,11 +268,13 @@ export async function transformTtsc(
         generation: transformed,
         key,
         source,
+        reportDivergence: !preparing,
       });
       if (action === "retry") {
         continue;
       }
       if (action === "serve") {
+        if (preparing) return undefined;
         return deliverCachedTransform({
           cache,
           cached,
@@ -261,6 +297,7 @@ export async function transformTtsc(
         projectRoot: selectedProjectRoot,
         currentFile: file,
         currentSource: source,
+        reportDivergence: !preparing,
         // Stamp the pass this compile was started for, not the one it happens
         // to finish in: a boundary crossed mid-compile leaves the generation
         // belonging to the earlier pass, so the next pass re-proves it.
@@ -296,11 +333,18 @@ export async function transformTtsc(
     const generation = transformed;
     const cached = await awaitOrEvict(cache, key, generation).catch(
       (rejection: unknown) => {
-        notifyRejectedGenerationInputs(hooks, rejection, file, watchSelection);
+        if (!preparing)
+          notifyRejectedGenerationInputs(
+            hooks,
+            rejection,
+            file,
+            watchSelection,
+          );
         throw rejection;
       },
     );
     if (cache !== undefined && cache.get(key) !== generation) {
+      if (preparing) return undefined;
       continue;
     }
     if (cache !== undefined) {
@@ -320,6 +364,7 @@ export async function transformTtsc(
         policies.set(key, reported);
       }
     }
+    if (preparing) return undefined;
     return deliverCachedTransform({
       cache,
       cached,
