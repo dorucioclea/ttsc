@@ -32,6 +32,7 @@ import { DependencyBuildGeneration } from "./DependencyBuildGeneration";
 import { OwnedProjectSource } from "./OwnedProjectSource";
 import type { OwningModuleOptions } from "./OwningModuleOptions";
 import { PluginDescriptorInputObservation } from "./PluginDescriptorInputObservation";
+import { PluginDescriptorInputReport } from "./PluginDescriptorInputReport";
 import type { ResolveResult } from "./ResolveResult";
 import { RuntimeEmitProvenance } from "./RuntimeEmitProvenance";
 import { RuntimeEntrySources } from "./RuntimeEntrySources";
@@ -392,7 +393,7 @@ function observePluginDescriptorResolutionCandidates(
     );
     return {
       commit: (selectedURL) => {
-        appendPluginDescriptorInputs(
+        PluginDescriptorInputReport.append(
           observation
             .commit(
               selectedURL === undefined
@@ -431,7 +432,7 @@ function observePluginDescriptorResolutionCandidates(
         DESCRIPTOR_PROBE_EXTENSIONS,
       ),
     );
-    appendPluginDescriptorInputs([
+    PluginDescriptorInputReport.append([
       ...local,
       ...(reached === -1 ? roots : roots.slice(0, reached + 1)).flatMap(
         (root) => root.lines,
@@ -567,7 +568,8 @@ function observePluginDescriptorResolutionCandidates(
  * active for direct-evaluator user preloads after hook installation. The exact
  * generated evaluator entry bypasses these hooks and suspends recording only
  * while its synchronous implementation imports load; descriptor imports then
- * resume it.
+ * resume it. A selected file needs positive content and physical proof even
+ * when an earlier candidate enumeration did not name it.
  */
 function recordPluginDescriptorResolution(
   specifier: string,
@@ -578,11 +580,14 @@ function recordPluginDescriptorResolution(
   const resolved = runtimeFilePath(resolvedURL);
   if (resolved === undefined) return;
   const parent = runtimeFilePath(parentURL);
-  recordPluginDescriptorInput({
-    ...(parent === undefined ? {} : { parent }),
-    resolved,
-    specifier,
-  });
+  recordPluginDescriptorInput(
+    {
+      ...(parent === undefined ? {} : { parent }),
+      resolved,
+      specifier,
+    },
+    true,
+  );
   for (
     let directory = path.dirname(resolved);
     ;
@@ -599,38 +604,47 @@ function recordPluginDescriptorResolution(
   }
 }
 
-function recordPluginDescriptorInput(record: {
-  hash?: string | null;
-  parent?: string;
-  realpath?: string | null;
-  resolved: string;
-  signature?: string;
-  specifier?: string;
-  unstable?: boolean;
-}): void {
-  appendPluginDescriptorInputs(observePluginDescriptorInput(record));
+function recordPluginDescriptorInput(
+  record: {
+    hash?: string | null;
+    parent?: string;
+    realpath?: string | null;
+    resolved: string;
+    signature?: string;
+    specifier?: string;
+    unstable?: boolean;
+  },
+  requirePresent: boolean = false,
+): void {
+  PluginDescriptorInputReport.append(
+    observePluginDescriptorInput(record, requirePresent),
+  );
 }
 
 /**
  * Observe one path and every symbolic link among its lexical ancestors, as the
- * lines `appendPluginDescriptorInputs` reports, without reporting them yet.
+ * lines `PluginDescriptorInputReport.append` reports, without reporting them
+ * yet.
  */
-function observePluginDescriptorInput(record: {
-  hash?: string | null;
-  parent?: string;
-  realpath?: string | null;
-  resolved: string;
-  signature?: string;
-  specifier?: string;
-  unstable?: boolean;
-}): string[] {
+function observePluginDescriptorInput(
+  record: {
+    hash?: string | null;
+    parent?: string;
+    realpath?: string | null;
+    resolved: string;
+    signature?: string;
+    specifier?: string;
+    unstable?: boolean;
+  },
+  requirePresent: boolean = false,
+): string[] {
   if (process.env.TTSC_PLUGIN_DESCRIPTOR_INPUTS_ACTIVE !== "1") return [];
   const lines: string[] = [];
   const observe = (line: string | undefined): void => {
     if (line !== undefined) lines.push(line);
     else PluginDescriptorInputObservation.invalidate();
   };
-  observe(observePluginDescriptorInputOnce(record));
+  observe(observePluginDescriptorInputOnce(record, requirePresent));
   const resolved = path.resolve(record.resolved);
   const parsed = path.parse(resolved);
   let current = parsed.root;
@@ -649,33 +663,19 @@ function observePluginDescriptorInput(record: {
   return lines;
 }
 
-/** Report observed lines to the parent loader, in the order given. */
-function appendPluginDescriptorInputs(lines: readonly string[]): void {
-  if (lines.length === 0) return;
-  if (process.env.TTSC_PLUGIN_DESCRIPTOR_INPUTS_ACTIVE !== "1") return;
-  PluginDescriptorInputObservation.record(lines);
-  const out = process.env.TTSC_PLUGIN_DESCRIPTOR_INPUTS_OUT;
-  if (out === undefined || out.length === 0) {
-    PluginDescriptorInputObservation.invalidate();
-    return;
-  }
-  try {
-    fs.appendFileSync(out, lines.join(""), "utf8");
-  } catch {
-    PluginDescriptorInputObservation.invalidate();
-  }
-}
-
 /** Observe one path without recursively revisiting its lexical ancestors. */
-function observePluginDescriptorInputOnce(record: {
-  hash?: string | null;
-  parent?: string;
-  realpath?: string | null;
-  resolved: string;
-  signature?: string;
-  specifier?: string;
-  unstable?: boolean;
-}): string | undefined {
+function observePluginDescriptorInputOnce(
+  record: {
+    hash?: string | null;
+    parent?: string;
+    realpath?: string | null;
+    resolved: string;
+    signature?: string;
+    specifier?: string;
+    unstable?: boolean;
+  },
+  requirePresent: boolean = false,
+): string | undefined {
   try {
     const beforeSignature = pluginDescriptorInputMetadataSignature(
       record.resolved,
@@ -687,6 +687,8 @@ function observePluginDescriptorInputOnce(record: {
     );
     const unstable =
       record.unstable === true ||
+      (requirePresent &&
+        (observedHash === null || observedRealpath === null)) ||
       beforeSignature === undefined ||
       afterSignature === undefined ||
       beforeSignature !== afterSignature ||

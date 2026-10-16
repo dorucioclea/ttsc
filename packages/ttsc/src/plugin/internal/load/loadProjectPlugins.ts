@@ -35,6 +35,7 @@ import { pluginBuildVersions } from "../source/pluginBuildVersions";
 import { pluginModuleReplaceDirectories } from "../source/pluginModuleReplaceDirectories";
 import { pluginSourceState } from "../source/pluginSourceState";
 import { resolvePluginGoModule } from "../source/resolvePluginGoModule";
+import { selectedRecordIdentityTempParent } from "../source/selectedRecordIdentityTempParent";
 import { COMMONJS_PLUGIN_DESCRIPTOR_SHIM_SOURCE } from "./COMMONJS_PLUGIN_DESCRIPTOR_SHIM_SOURCE";
 import { PLUGIN_DESCRIPTOR_SHIM_SOURCE } from "./PLUGIN_DESCRIPTOR_SHIM_SOURCE";
 import { PluginDescriptorAdmission } from "./PluginDescriptorAdmission";
@@ -44,6 +45,7 @@ import { ProjectPluginEntries } from "./ProjectPluginEntries";
 import { collectProjectHostInputs } from "./collectProjectHostInputs";
 import { composePluginSources } from "./composePluginSources";
 import { declaresHostInputReads } from "./declaresHostInputReads";
+import { descriptorRecordEnvironment } from "./descriptorRecordEnvironment";
 import { hashHostInputPaths } from "./hashHostInputPaths";
 import { moduleResolutionBaseSelects } from "./moduleResolutionBaseSelects";
 import { pluginLabel } from "./pluginLabel";
@@ -1547,9 +1549,11 @@ function loadCommonJsDescriptor(
     cwd: descriptorCache.projectRoot,
     // Everything the child receives besides the per-evaluation output paths.
     env: {
-      ...effectiveEnv,
+      ...descriptorRecordEnvironment(
+        effectiveEnv,
+        descriptorCache.identities?.root,
+      ),
       ...(node === undefined ? {} : { TTSC_NODE_BINARY: node }),
-      ...descriptorRecordRoot(descriptorCache.identities),
       TTSC_TTSX_BINARY: ttsx,
     },
     projectRoot: descriptorCache.projectRoot,
@@ -1579,7 +1583,7 @@ function loadCommonJsDescriptor(
     PluginDescriptorEvaluationCache.locate(cacheAuthority) === cacheFile
   )
     return cached;
-  const dir = createEvaluationTempDir();
+  const dir = createEvaluationTempDir(descriptorCache.identities);
   const out = path.join(dir, "descriptor.json");
   const inputsOut = path.join(dir, "descriptor-inputs.ndjson");
   const diagnostics = path.join(dir, "descriptor.stderr");
@@ -1635,11 +1639,13 @@ function loadCommonJsDescriptor(
         {
           cwd: descriptorCache.projectRoot,
           env: {
-            ...effectiveEnv,
+            ...descriptorRecordEnvironment(
+              effectiveEnv,
+              descriptorCache.identities?.root,
+            ),
             // The direct evaluator may be Bun, but ttsx and native config
             // loaders require a real Node runtime with synchronous hooks.
             ...(node === undefined ? {} : { TTSC_NODE_BINARY: node }),
-            ...descriptorRecordRoot(descriptorCache.identities),
             TTSC_TTSX_BINARY: ttsx,
             TTSC_PLUGIN_CONTEXT: JSON.stringify(context),
             TTSC_PLUGIN_DESCRIPTOR_LOAD: "1",
@@ -2038,7 +2044,7 @@ function loadDescriptorViaTtsx(
   if (node === undefined || ttsx === undefined || ttsx.length === 0) {
     return undefined;
   }
-  const dir = createEvaluationTempDir();
+  const dir = createEvaluationTempDir(descriptorCache.identities);
   const out = path.join(dir, "descriptor.json");
   const inputsOut = path.join(dir, "descriptor-inputs.ndjson");
   const shim = path.join(dir, "load-descriptor.mts");
@@ -2067,12 +2073,14 @@ function loadDescriptorViaTtsx(
       cwd: descriptorCache.projectRoot,
       encoding: "utf8",
       env: {
-        ...effectiveEnv,
+        ...descriptorRecordEnvironment(
+          effectiveEnv,
+          descriptorCache.identities?.root,
+        ),
         // Carry ttsc's own node/ttsx locators explicitly so the child (which
         // may recurse into further descriptor loads) finds them even when the
         // instance-env snapshot predates `withPluginLoaderEnv`.
         TTSC_NODE_BINARY: node,
-        ...descriptorRecordRoot(descriptorCache.identities),
         TTSC_TTSX_BINARY: ttsx,
         TTSC_PLUGIN_CONTEXT: JSON.stringify({
           binary: context.binary,
@@ -2158,20 +2166,6 @@ interface TtsxDescriptorResolutionRecord {
 }
 
 /**
- * The private variable that hands a descriptor evaluator the plugin cache root
- * this load's record store selected, so the child proves the compiler it runs
- * from that root's records instead of streaming it (#1726) and never selects a
- * cache root of its own. Absent without a store.
- */
-function descriptorRecordRoot(
-  identities: PluginContentIdentities.Store | undefined,
-): { TTSC_PLUGIN_RECORD_ROOT?: string } {
-  return identities === undefined
-    ? {}
-    : { TTSC_PLUGIN_RECORD_ROOT: identities.root };
-}
-
-/**
  * Expand the ttsx runtime's selected module edges into the same exact and
  * missing resolution inputs used by the direct isolated evaluator.
  *
@@ -2197,22 +2191,38 @@ function readTtsxDescriptorInputs(
   const signatures = new Map<string, string>();
   const unstableInputs = new Set<string>();
   let complete = false;
-  let text = "";
+  let envelopeText: string | undefined;
   if (
     PluginPackageResolution.isRecord(observation) &&
     Array.isArray(observation.lines) &&
     observation.lines.every((line: unknown) => typeof line === "string")
   ) {
     complete = observation.complete === true;
-    text = observation.lines.join("");
+    envelopeText = observation.lines.join("");
   }
+  let reportText: string | undefined;
   try {
-    text += fs.readFileSync(file, "utf8");
+    reportText = fs.readFileSync(file, "utf8");
   } catch {
     // The directly serialized observation copy remains authoritative when
     // no side-channel file was produced. A missing completion copy is never
     // repaired by whichever partial lines happen to remain on disk.
   }
+  if (
+    envelopeText !== undefined &&
+    reportText !== undefined &&
+    envelopeText !== reportText
+  ) {
+    // A partial or contradictory side channel cannot certify completeness.
+    // Keep both records so watch callers still learn every reported input.
+    complete = false;
+  }
+  const text =
+    envelopeText === undefined
+      ? (reportText ?? "")
+      : reportText === undefined || reportText === envelopeText
+        ? envelopeText
+        : `${envelopeText}\n${reportText}`;
   for (const line of text.split(/\r?\n/)) {
     if (line.trim() === "") continue;
     let record: TtsxDescriptorResolutionRecord;
@@ -2516,11 +2526,17 @@ function ttscPackageRoot(): string {
 }
 
 /**
- * Create an evaluator directory whose cleanup path cannot follow a retargeted
- * parent alias.
+ * Create an evaluator directory under the current selected record store when it
+ * has an ordinary identities child. Canonical allocation fixes the physical
+ * cleanup path; an absent or unproved store retains system TEMP.
  */
-function createEvaluationTempDir(): string {
-  return createCanonicalTempDirectory("ttsc-plugin-descriptor-");
+function createEvaluationTempDir(
+  identities: PluginContentIdentities.Store | undefined,
+): string {
+  return createCanonicalTempDirectory(
+    "ttsc-plugin-descriptor-",
+    selectedRecordIdentityTempParent(identities?.root),
+  );
 }
 
 /**
