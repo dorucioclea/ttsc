@@ -17,6 +17,9 @@ jobs:
           - { name: win32-x64, runner: windows-2025, node: 24.x }
           - { name: linux-arm64, runner: ubuntu-24.04-arm, node: floor }
           - { name: darwin-arm64, runner: macos-15, node: current }
+          # The TypeScript 7.1 compiler target: the workspace installs the
+          # pinned 7.1 nightly, so every batch builds and checks with 7.1.
+          - { name: linux-x64-typescript-7.1, runner: ubuntu-latest, node: 24.x, typescript: "7.1" }
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -69,6 +72,30 @@ jobs:
             ${{ steps.go-cache.outputs.modules }}
             ${{ steps.go-cache.outputs.objects }}
           key: ${{ steps.go-objects.outputs.cache-primary-key }}
+      # The repository itself builds on its own 7.0 toolchain: its packages use
+      # typia's transform, whose native code compiles on 7.0 only. Only the E2E
+      # consumers then switch to the 7.1 nightly.
+      - name: Select the TypeScript 7.1 nightly
+        if: ${{ matrix.typescript == '7.1' }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          // The nightly whose gitHead is the 7.1 target's pin, shared with the
+          // installation E2E's compiler-target case.
+          const { version } = JSON.parse(
+            fs.readFileSync("tests/test-e2e/fixtures/ttsc/compiler-target-probe/typescript-7.1.json", "utf8"),
+          );
+          const file = "pnpm-workspace.yaml";
+          const before = fs.readFileSync(file, "utf8");
+          const after = before.replace(/^(catalogs:\s+typescript:\s+typescript: ).*$/m, `$1${version}`);
+          if (after === before) throw new Error("pnpm-workspace.yaml has no typescript catalog entry to replace");
+          fs.writeFileSync(file, after);
+          console.info("TypeScript catalog: " + version);
+          NODE
+      - name: Install the TypeScript 7.1 nightly
+        if: ${{ matrix.typescript == '7.1' }}
+        run: pnpm install --no-frozen-lockfile
       - name: Select the supported runtime Node release
         id: runtime-node
         shell: bash

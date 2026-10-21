@@ -35,7 +35,7 @@ func (plugin) ApplyProgram(program *driver.Program, context driver.PluginContext
     }
     found := false
     for _, source := range program.TSProgram.GetSourceFiles() {
-      if filepath.Clean(source.FileName()) == filepath.Clean(selected) {
+      if filepath.Clean(string(source.FileName())) == filepath.Clean(selected) {
         found = true
         break
       }
@@ -117,9 +117,9 @@ func (plugin) ApplyProgram(program *driver.Program, context driver.PluginContext
       continue
     }
     for _, dependency := range dependencies {
-      context.ReportFileDependency(source.FileName(), dependency)
+      context.ReportFileDependency(string(source.FileName()), dependency)
     }
-    context.ReportFileDependenciesComplete(source.FileName())
+    context.ReportFileDependenciesComplete(string(source.FileName()))
   }
   return nil
 }
