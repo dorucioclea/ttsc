@@ -78,8 +78,22 @@ export interface ITtscProjectMembershipPolicy {
   /** Absolute directory exclusions represented for project-root discovery. */
   readonly excludedDirectories: readonly string[];
 
-  /** Lowercased extensions a file needs to be a possible program input. */
+  /** Literal suffix spellings a file needs to be a possible program input. */
   readonly inputExtensions: readonly string[];
+
+  /**
+   * Explicit extension options before compiler defaults, plus declared mapper
+   * suffixes. Missing options use the pinned compiler's defaults. Optional for
+   * older policy producers, whose extension lists remain their own authority.
+   */
+  readonly extensionOptionOrigins?: Readonly<{
+    allowJs?: boolean;
+    checkJs?: boolean;
+    resolveJsonModule?: boolean;
+    module?: string;
+    moduleResolution?: string;
+    mapperExtensions: readonly string[];
+  }>;
 
   /**
    * Every config file consulted to produce this policy, including inherited

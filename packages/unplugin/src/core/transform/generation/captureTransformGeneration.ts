@@ -33,6 +33,7 @@ import { createHostInputMutationTracker } from "../tracker/createHostInputMutati
 import { createProjectMutationTracker } from "../tracker/createProjectMutationTracker";
 import { settleMutationTrackers } from "../tracker/settleMutationTrackers";
 import { trackedInputScopes } from "../tracker/trackedInputScopes";
+import { captureCompilerArguments } from "../tsconfig/captureCompilerArguments";
 import { compilerProjectSpelling } from "../tsconfig/compilerProjectSpelling";
 import { createTransformScratchDirectory } from "../tsconfig/createTransformScratchDirectory";
 import { createTransformTsconfig } from "../tsconfig/createTransformTsconfig";
@@ -47,10 +48,12 @@ import { walkSnapshotComplete } from "../validation/walkSnapshotComplete";
 import { witnessExternalDependencies } from "../validation/witnessExternalDependencies";
 import { TRANSFORM_FAILED_GENERATION_VALIDATIONS } from "./TRANSFORM_FAILED_GENERATION_VALIDATIONS";
 import { TRANSFORM_GENERATION_FAILURES } from "./TRANSFORM_GENERATION_FAILURES";
+import type { TtscCompilerMembershipHint } from "./TtscCompilerMembershipHint";
 import { captureFailedGenerationInputStates } from "./captureFailedGenerationInputStates";
 import { captureTransformSourceHashes } from "./captureTransformSourceHashes";
 import { createGenerationProofFailures } from "./createGenerationProofFailures";
 import { mergeGenerationProofFailures } from "./mergeGenerationProofFailures";
+import { primeCompilerMembership } from "./primeCompilerMembership";
 import { projectWalkFailureFingerprint } from "./projectWalkFailureFingerprint";
 import { projectWalkStable } from "./projectWalkStable";
 import { recordGenerationProofFailure } from "./recordGenerationProofFailure";
@@ -120,6 +123,14 @@ export async function captureTransformGeneration(props: {
 
   /** Compiler options overlaid on the project without editing its source config. */
   compilerOptions: Record<string, unknown>;
+
+  /** Detached environment paired with the requesting generation's cache key. */
+  compilerEnvironment?: NodeJS.ProcessEnv;
+  /** Explicit override that produced the effective compiler environment. */
+  runExternalCode?: boolean;
+
+  /** Learned native root settings used only to prime this attempt's walk. */
+  compilerMembership?: TtscCompilerMembershipHint;
 
   /** Native source path whose host delivery initiated the attempt. */
   currentFile: string;
@@ -242,7 +253,10 @@ export async function captureTransformGeneration(props: {
     );
     const temporaryTsconfig =
       configured.path === props.tsconfig ? undefined : configured.path;
-    const compilerEnvironment = transformScratchEnvironment(scratchDirectory);
+    const compilerEnvironment = transformScratchEnvironment(
+      scratchDirectory,
+      props.compilerEnvironment,
+    );
     if (temporaryTsconfig === undefined) {
       delete compilerEnvironment[TTSC_SEMANTIC_CONFIG_PATH];
     } else {
@@ -255,11 +269,15 @@ export async function captureTransformGeneration(props: {
     // relative `outDir` is anchored at the config that declares it, and the
     // generated config lives in a system temp directory. The caller's
     // compiler-options overlay still wins, since it wins for the compile too.
-    const mergedPolicy = mergeMembershipPolicyOverlay(
-      tsconfigState.membershipPolicy,
-      props.compilerOptions,
-      path.dirname(props.tsconfig),
+    const membershipPrimer = primeCompilerMembership(
+      mergeMembershipPolicyOverlay(
+        tsconfigState.membershipPolicy,
+        props.compilerOptions,
+        path.dirname(props.tsconfig),
+      ),
+      props.compilerMembership,
     );
+    const mergedPolicy = membershipPrimer.policy;
     // The walk before the compile matches root specs under the case policy an
     // earlier compile reported, or a provisional cache-root approximation
     // under this attempt's environment. The approximation does not observe
@@ -432,7 +450,7 @@ export async function captureTransformGeneration(props: {
       undefined,
       projectRoot,
     );
-    const { membershipPolicy, casePolicyLearned } =
+    const { membershipPolicy, membershipPolicyLearned } =
       selectReportedMembershipPolicy(primedPolicy, result);
     TRANSFORM_RESULT_MEMBERSHIP.set(result, {
       // Only the actual complete directory walk authorizes replacing a listing
@@ -440,7 +458,7 @@ export async function captureTransformGeneration(props: {
       // unreadable directory was enumerated, and a changed compiler comparison
       // answer means the primed walk used another admission policy.
       enumeratedDirectories:
-        before.directoryComplete && !casePolicyLearned
+        before.directoryComplete && !membershipPolicyLearned
           ? new Set(before.projectDirectories.map((snapshot) => snapshot.path))
           : new Set(),
       policy: membershipPolicy,
@@ -623,7 +641,7 @@ export async function captureTransformGeneration(props: {
     // published.
     await settleMutationTrackers([tracker, hostInputTracker, candidateTracker]);
     const walkStable =
-      !casePolicyLearned &&
+      !membershipPolicyLearned &&
       projectWalkStable({
         before,
         configStable,
@@ -657,6 +675,10 @@ export async function captureTransformGeneration(props: {
       : undefined;
     const projectInputHashes = { ...inputSnapshot.hashes };
     const cached: TtscCachedProjectTransform = {
+      compilerArguments: captureCompilerArguments(
+        compilerEnvironment,
+        props.runExternalCode,
+      ),
       // The pass this compile was started for. Its snapshot describes the
       // project as of this compile, so it is settled for this pass and any
       // later pass must re-prove it.
@@ -750,10 +772,10 @@ export async function captureTransformGeneration(props: {
         path: props.tsconfig,
       });
     }
-    if (casePolicyLearned) {
+    if (membershipPolicyLearned) {
       recordGenerationProofFailure(failures, {
         domain: "project",
-        kind: "case-policy-learned",
+        kind: "membership-policy-learned",
         path: props.tsconfig,
       });
     } else if (!walkStable) {
@@ -788,6 +810,17 @@ export async function captureTransformGeneration(props: {
     mergeGenerationProofFailures(failures, universalInputCapture.failures);
     const graphProofs =
       graphFailures.entries.length === 0 && graphFailures.omitted === 0;
+    if (
+      configStable &&
+      graphProofs &&
+      adoptionFailure === undefined &&
+      result.type !== "exception" &&
+      result.graph?.membership !== undefined
+    )
+      cached.compilerMembership = {
+        basis: membershipPrimer.basis,
+        report: result.graph.membership,
+      };
     const universalInputs = universalInputCapture.validation !== undefined;
     const stableProjectSnapshot =
       walkStable &&
